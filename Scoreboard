@@ -1,0 +1,140 @@
+%# Ticket Owner Scoreboard
+%# Portlet for RT, known to work with v. 3.8.8
+%# Seth D. Galitzer
+%# Dec. 7, 2009
+%# updated: May 12, 2010
+%# Based on OwnerSummary by Ruslan Zakirov <Ruslan.Zakirov@gmail.com>
+%#    Source repository:
+%#    (http://github.com/ruz/RT-Extension-SummaryByUser)
+
+<div class="ticket-overview">
+<&|/Widgets/TitleBox, title => loc("Scoreboard"), bodyclass => "" &>
+<table border="0" cellspacing="0" cellpadding="1" width="100%" class="queue-summary">
+<tr>
+<th class="collection-as-table"><&|/l&>Owner</&></th>
+% for my $status (@statuses) {
+<th class="collection-as-table"><% loc($status) %></th>
+% }
+</tr>
+<%PERL>
+my $filt;
+my $otitle;
+for my $uid (sort { $display{$a} cmp $display{$b} } keys %table) {
+    next if ($uid == $allowners);
+    my $all_q = "Owner = $uid AND ($status_cond)";
+    $i++;
+    $m->out('<tr class="'. ($i%2 ? 'oddline' : 'evenline') .'" >' );
+</%PERL>
+<td><a href="<% RT->Config->Get('WebPath') %>/Search/Results.html?Query=<% $all_q |u,n %>" title="All tickets for <% $display{$uid} %>"><% $display{$uid} |n %></a></td>
+%   for my $status (@statuses) {
+%       my $cond = "Owner = $uid AND Status = '$status'";
+%       if (my $count = $table{$uid}{$status} ) {
+%           if ($status eq "Total") {
+%               $filt=$all_q;
+%               $otitle="All";
+%           } else {
+%               $filt="Status = '$status'";
+%               $otitle="$status";
+%           };
+%           $otitle .= " tickets for $display{$uid}";
+<td align="right"><a href="<% RT->Config->Get('WebPath') %>/Search/Results.html?Query=<% $filt |u,n %>" title="<% $otitle %>"><% $count %></a></td>
+%       } else {
+<td align="right">-</td>
+%       };
+%   };
+</tr>
+% };
+%# second iteration to put "All Owners" summary last
+%   $i++;
+%   $m->out('<tr class="'. ($i%2 ? 'oddline' : 'evenline') .'" >' );
+<td><a href="<% RT->Config->Get('WebPath') %>/Search/Results.html?Query=<% $status_cond |u,n %>" title="All tickets for all owners"><% "All Owners" |n %></a></td>
+%   for my $status (@statuses) {
+%       if (my $count = $table{$allowners}{$status} ) {
+%           if ($status eq "Total") {
+%               $filt=$status_cond;
+%               $otitle="All";
+%           } else {
+%               $filt="Status = '$status'";
+%               $otitle="$status";
+%           };
+<td align="right"><a href="<% RT->Config->Get('WebPath') %>/Search/Results.html?Query=<% $filt |u,n %>" title="<% $otitle %> tickets for all owners"><% $count %></a></td>
+%       } else {
+<td align="right">-</td>
+%       };
+%   };
+</tr>
+</table>
+</&>
+</div>
+<%INIT>
+no warnings 'uninitialized';
+my $i = 0;
+my $allowners=-1;     # arbitrary unused ID
+# my @statuses = RT->Config->Get('ActiveStatus');
+my @statuses = RT::Queue->ActiveStatusArray;
+
+# collect a list of valid privilged users, don't care about anybody else
+my %users;
+my $Users = RT::Users->new($session{'CurrentUser'});
+$Users->LimitToPrivileged;
+while (my $User = $Users->Next()) {
+    next if ($User->id == $RT::Nobody->id);  # skip the Nobody user
+    $users{$User->Id()} = $User;
+};
+
+my $status_cond = join ' OR ', map "Status = '$_'", @statuses;
+
+# add a record for per-owner totals
+push(@statuses,"Total");
+
+use RT::Report::Tickets;
+my $tix = RT::Report::Tickets->new( $session{'CurrentUser'} );
+my ($count_field, $owner_field, $status_field) = $tix->SetupGroupings(
+    Query => $status_cond, GroupBy => ['Owner.id', 'Status'],
+);
+
+my (%table, %display) = ();
+my $uid=0;
+while ( my $entry = $tix->Next ) {
+    $uid = $entry->__Value( $owner_field );
+    next if (!($users{$uid}));               # skip if not a privileged user
+
+    unless ( $display{ $uid } ) {
+        my $owner = RT::User->new( $RT::SystemUser );
+        $owner->Load( $uid );
+        unless ( $owner->id ) {
+            $RT::Logger->error( "Couldn't load user $uid");
+            next;
+        }
+        $display{$uid} = $m->scomp('/Elements/ShowUser', User => $owner );
+    }
+
+    my $status = $entry->__Value( $status_field );
+    my $count = $entry->__Value( $count_field );
+    $table{$uid}{$status} = $count;
+};
+
+# reset report query to get total for all statuses
+$tix = RT::Report::Tickets->new( $session{'CurrentUser'} );
+($count_field, $owner_field) = $tix->SetupGroupings(
+    Query => $status_cond, GroupBy => 'Owner.id',
+);
+
+while ( my $entry = $tix->Next ) {
+    $uid = $entry->__Value( $owner_field );
+    next if (!($users{$uid}));               # skip if not a privileged user
+    my $count = $entry->__Value( $count_field );
+    $table{$uid}{"Total"} = $count;
+};
+
+# generate a total count for each status and append it to the table
+#   note: dereferencing a hash of hashes is insanity
+foreach my $tuid (keys %table){
+    next if ($tuid == $allowners);
+    my $deref = $table{$tuid};
+    foreach my $tstatus (keys %$deref) {
+        $table{$allowners}{$tstatus} += $$deref{$tstatus};
+    };
+};
+
+</%INIT>
